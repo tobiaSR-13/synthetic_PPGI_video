@@ -13,17 +13,23 @@ import numpy as np
 from datetime import date
 
 sys.path.append(
-    r"H:\Projekte\Synthetic_Video_of_Real_PPG\Content")  # change for your project directory if running in Blender
+    r"C:\Users\reinh\Desktop\Synthetic_Video_of_Real_PPG\Content")  # change for your project directory if running in Blender
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # for running external
 
 import ppg2ppgi_animation as p2p
 import config
 import image_prep as ip
-from render_settings import RenderSettings
+import render_settings
+import images_store
 
 importlib.reload(p2p)
 importlib.reload(config)
 importlib.reload(ip)
+importlib.reload(images_store)
+importlib.reload(render_settings)
+
+from render_settings import RenderSettings
+from images_store import Images
 
 PPG_DATA_PATH = r"X:\PPGI\KISMED"
 
@@ -51,7 +57,7 @@ def add_FLAME_head(pos, x_rotation=0, y_rotation=0, z_rotation=0):
     gender = "female" if gender_int == 0 else "male"
     bpy.data.window_managers["WinMan"].flame_tool.flame_gender = gender
 
-    #add head model
+    # add head model
     bpy.ops.scene.flame_add_gender()
 
     bpy.ops.transform.translate(value=pos)
@@ -95,7 +101,7 @@ def import_exp_room(path):
 
 
 # make shader nodes for animation logic
-def make_shader_animation(name):
+def make_shader_animation(name, max_val):
     """
     Shader Node Group for animation logic
     :param name: Name for the Group Node
@@ -106,13 +112,25 @@ def make_shader_animation(name):
     links = group_tree.links
 
     # add inputs and outputs
-    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='animation_value', in_out='INPUT') #animation value that controls the change of colors between two images
-    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='phase_map', in_out='INPUT') #phase map input / 0.5 is no phase map is used
-    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='mean_radius', in_out='INPUT') #mean radius or color for animating mean_radius +-0.1
-    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='Mag_Value', in_out='INPUT') #magnitude value of current cycle
-    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='range_(0-1)', in_out='OUTPUT') #to control Mix Nodes
-    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='range_(-1-1)', in_out='OUTPUT') #if a mask should be used to control Mix Nodes
-    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='range_(+-0.1)', in_out='OUTPUT') #mean_radius +-0.1
+    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='animation_value',
+                                    in_out='INPUT')  # animation value that controls the change of colors between two images
+    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='phase_map',
+                                    in_out='INPUT')  # phase map input / 0.5 is no phase map is used
+    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='mean_radius',
+                                    in_out='INPUT')  # mean radius or color for animating mean_radius +-0.1
+    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='Mag_Value',
+                                    in_out='INPUT')  # magnitude value of current cycle
+    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='Mag_Map',
+                                    in_out='INPUT')  # magnitude map for color
+
+    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='range_(0-1)',
+                                    in_out='OUTPUT')  # to control Mix Nodes
+    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='range_(-1-1)',
+                                    in_out='OUTPUT')  # if a mask should be used to control Mix Nodes
+    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='range_(+-0.1)',
+                                    in_out='OUTPUT')  # mean_radius +-0.1
+    group_tree.interface.new_socket(socket_type='NodeSocketFloat', name='range_(+-mag_map)',
+                                    in_out='OUTPUT')  # mean_radius +-mag_map
 
     # add nodes
     group_outputs = group_tree.nodes.new('NodeGroupOutput')
@@ -151,6 +169,22 @@ def make_shader_animation(name):
     group_inputs = group_tree.nodes.new('NodeGroupInput')
     group_inputs.location = (-400, 0)
 
+    # nodes for +-mag_map
+    map_range = nodes.new(type="ShaderNodeMapRange")
+    map_range.location = (0, -350)
+
+    mul_mag_map = nodes.new(type="ShaderNodeMath")
+    mul_mag_map.operation = "MULTIPLY"
+    mul_mag_map.location = (200, -350)
+
+    mul_mag_map_sine = nodes.new(type="ShaderNodeMath")
+    mul_mag_map_sine.operation = "MULTIPLY"
+    mul_mag_map_sine.location = (700, -350)
+
+    mul_add_mag_map = nodes.new(type="ShaderNodeMath")
+    mul_add_mag_map.operation = "MULTIPLY_ADD"
+    mul_add_mag_map.location = (900, -350)
+
     # link nodes and set values
     links.new(group_inputs.outputs['phase_map'], add_node_1.inputs[0])
     links.new(group_inputs.outputs['animation_value'], add_node_2.inputs[0])
@@ -164,7 +198,7 @@ def make_shader_animation(name):
     links.new(add_node_2.outputs["Value"], sine_node.inputs[0])
 
     links.new(sine_node.outputs['Value'], mul_node_2.inputs[0])
-    mul_node_2.inputs[1].default_value = -0.1  # inverting because max ppg means less radius
+    mul_node_2.inputs[1].default_value = -0.1 * config.mag_scale  # inverting because max ppg means less radius
 
     links.new(mul_node_2.outputs['Value'], radius_mul_node.inputs[1])
     links.new(group_inputs.outputs['Mag_Value'], radius_mul_node.inputs[0])
@@ -180,6 +214,22 @@ def make_shader_animation(name):
 
     links.new(sine_node.outputs['Value'], group_outputs.inputs['range_(-1-1)'])
     links.new(add_node_3.outputs[0], group_outputs.inputs['range_(+-0.1)'])
+
+    # links for +-mag_map
+    links.new(group_inputs.outputs[4], map_range.inputs[0])
+    map_range.inputs[2].default_value = max_val
+
+    links.new(map_range.outputs[0], mul_mag_map.inputs[0])
+    mul_mag_map.inputs[1].default_value = -0.1 * config.mag_scale  # inverting because max ppg means less radius
+
+    links.new(mul_mag_map.outputs[0], mul_mag_map_sine.inputs[0])
+    links.new(sine_node.outputs['Value'], mul_mag_map_sine.inputs[1])
+
+    links.new(mul_mag_map_sine.outputs[0], mul_add_mag_map.inputs[0])
+    links.new(group_inputs.outputs[3], mul_add_mag_map.inputs[1])
+    links.new(group_inputs.outputs[2], mul_add_mag_map.inputs[2])
+
+    links.new(mul_add_mag_map.outputs[0], group_outputs.inputs[3])
 
     return group_tree
 
@@ -275,10 +325,10 @@ def makeShader(images):
     subsurface_node.location = (0, 0)
 
     combine_color_node = nodes.new(type="ShaderNodeCombineColor")
-    combine_color_node.location = (-200, 0)
+    combine_color_node.location = (-200, -100)
 
-    # combine_radius_node = nodes.new(type="ShaderNodeCombineXYZ")
-    # combine_radius_node.location = (-200, -200)
+    combine_radius_node = nodes.new(type="ShaderNodeCombineXYZ")
+    combine_radius_node.location = (-200, 100)
 
     animation_value_node = nodes.new(type="ShaderNodeValue")
     animation_value_node.location = (-1000, 1000)
@@ -298,7 +348,7 @@ def makeShader(images):
 
     red_animation = nodes.new('ShaderNodeGroup')
     red_animation.location = (-700, 800)
-    red_animation.node_tree = make_shader_animation("Animation_Red")
+    red_animation.node_tree = make_shader_animation("Animation_Red", images.max_mag_red)
     red_animation.name = "animation_red"
     red_animation.inputs['mean_radius'].default_value = config.red_radius
 
@@ -328,7 +378,7 @@ def makeShader(images):
 
     green_animation = nodes.new('ShaderNodeGroup')
     green_animation.location = (-700, 100)
-    green_animation.node_tree = make_shader_animation("Animation_Green")
+    green_animation.node_tree = make_shader_animation("Animation_Green", images.max_mag_green)
     green_animation.name = "animation_green"
     green_animation.inputs['mean_radius'].default_value = config.green_radius
 
@@ -358,7 +408,7 @@ def makeShader(images):
 
     blue_animation = nodes.new('ShaderNodeGroup')
     blue_animation.location = (-700, -600)
-    blue_animation.node_tree = make_shader_animation("Animation_Blue")
+    blue_animation.node_tree = make_shader_animation("Animation_Blue", images.max_mag_blue)
     blue_animation.name = "animation_blue"
     blue_animation.inputs['mean_radius'].default_value = config.blue_radius
 
@@ -380,22 +430,12 @@ def makeShader(images):
     blue_mag_node.image = images.magnitude_blue
     blue_mag_node.image.colorspace_settings.name = 'Non-Color'
 
-    # RADII
-    map_range_node = nodes.new(type="ShaderNodeMapRange")
-    map_range_node.location = (300, -100)
-    # input green magnitude and calculated max value of image for 'From Max'
-
-    mul_radius_node = nodes.new(type="ShaderNodeMath")
-    mul_radius_node.operation = "MULTIPLY"
-    mul_radius_node.location = (200, 0)
-    # input map range and (-1,1) animation
-    # output to shader mix node that mixes to subS-nodes
-
     # create links
     # RED animation
     links.new(animation_value_node.outputs["Value"], red_animation.inputs[0])
     links.new(phase_red_node.outputs["Color"], red_animation.inputs[1])
     links.new(magnitude_value_node.outputs[0], red_animation.inputs[3])
+    links.new(red_mag_node.outputs["Color"], red_animation.inputs[4])
 
     links.new(magnitude_value_node.outputs[0], red_magnitude.inputs[2])
     links.new(red_mean_node.outputs["Color"], red_magnitude.inputs[0])
@@ -409,6 +449,7 @@ def makeShader(images):
     links.new(animation_value_node.outputs["Value"], green_animation.inputs[0])
     links.new(phase_green_node.outputs["Color"], green_animation.inputs[1])
     links.new(magnitude_value_node.outputs[0], green_animation.inputs[3])
+    links.new(green_mag_node.outputs["Color"], green_animation.inputs[4])
 
     links.new(magnitude_value_node.outputs[0], green_magnitude.inputs[2])
     links.new(green_mean_node.outputs["Color"], green_magnitude.inputs[0])
@@ -422,6 +463,7 @@ def makeShader(images):
     links.new(animation_value_node.outputs["Value"], blue_animation.inputs[0])
     links.new(phase_blue_node.outputs["Color"], blue_animation.inputs[1])
     links.new(magnitude_value_node.outputs[0], blue_animation.inputs[3])
+    links.new(blue_mag_node.outputs["Color"], blue_animation.inputs[4])
 
     links.new(magnitude_value_node.outputs[0], blue_magnitude.inputs[2])
     links.new(blue_mean_node.outputs["Color"], blue_magnitude.inputs[0])
@@ -438,13 +480,14 @@ def makeShader(images):
 
     # RADII animation
 
-    # links.new(red_animation.outputs["radius_animation"], combine_radius_node.inputs[0])
-    # links.new(green_animation.outputs["radius_animation"], combine_radius_node.inputs[1])
-    # links.new(blue_animation.outputs["radius_animation"], combine_radius_node.inputs[2])
+    links.new(red_animation.outputs[3], combine_radius_node.inputs[0])
+    links.new(green_animation.outputs[3], combine_radius_node.inputs[1])
+    links.new(blue_animation.outputs[3], combine_radius_node.inputs[2])
 
     # output connections
-    links.new(combine_color_node.outputs["Color"], subsurface_node.inputs[0])
-    # links.new(combine_radius_node.outputs["Vector"], subsurface_node.inputs[2])
+    subsurface_node.inputs[0].default_value = images.getMeanSkinColor()
+    # links.new(combine_color_node.outputs["Color"], subsurface_node.inputs[0])
+    links.new(combine_radius_node.outputs["Vector"], subsurface_node.inputs[2])
     subsurface_node.inputs[2].default_value[0] = config.red_radius
     subsurface_node.inputs[2].default_value[1] = config.green_radius
     subsurface_node.inputs[2].default_value[2] = config.blue_radius
@@ -470,6 +513,7 @@ def makeShader(images):
     # backward_animation.location = (-400, -300)
     # backward_animation.node_tree = make_shader_animation_forward(-2, 1.5, "Animation_Backward")
     # backward_animation.name = "animation_backward"
+
 
 # adjust shader for SCAMPS animation
 def makeShaderSCAMPS(images):
@@ -503,41 +547,40 @@ def makeShaderSCAMPS(images):
     tex_image_node.location = (-400, 600)
     tex_image_node.image = images.texture
 
-    mix_radii_node = nodes.new(type="ShaderNodeMixShader")
-    mix_radii_node.location = (200, -200)
-
     subsurface_node = nodes.new(type="ShaderNodeSubsurfaceScattering")
-    subsurface_node.location = (0, -100)
-    subsurface_node.inputs[2].default_value[0] = config.red_radius - 0.1
-    subsurface_node.inputs[2].default_value[0] = config.green_radius - 0.1
-    subsurface_node.inputs[2].default_value[0] = config.blue_radius - 0.1
+    subsurface_node.location = (200, 0)
+    # subsurface_node.inputs[2].default_value[0] = config.red_radius
+    # subsurface_node.inputs[2].default_value[0] = config.green_radius
+    # subsurface_node.inputs[2].default_value[0] = config.blue_radius
 
-    subsurface_change_node = nodes.new(type="ShaderNodeSubsurfaceScattering")
-    subsurface_change_node.location = (0, -400)
-    subsurface_change_node.inputs[2].default_value[0] = config.red_radius + 0.1
-    subsurface_change_node.inputs[2].default_value[0] = config.green_radius + 0.1
-    subsurface_change_node.inputs[2].default_value[0] = config.blue_radius + 0.1
+    add_radius_node = nodes.new(type="ShaderNodeVectorMath")
+    add_radius_node.location = (0, -200)
 
-    mul_add_node = nodes.new(type="ShaderNodeMath")
-    mul_add_node.operation = "MULTIPLY_ADD"
-    mul_add_node.location = (0, 100)
+    add_color_node = nodes.new(type="ShaderNodeVectorMath")
+    add_color_node.location = (0, 100)
 
-    mul_radius_node = nodes.new(type="ShaderNodeMath")
-    mul_radius_node.operation = "MULTIPLY"
-    mul_radius_node.location = (-200, 100)
+    scale_color_node = nodes.new(type="ShaderNodeVectorMath")
+    scale_color_node.operation = "SCALE"
+    scale_color_node.location = (-200, 100)
 
-    radius_mask = nodes.new(type="ShaderNodeTexImage")
-    radius_mask.location = (-500, 200)
-    radius_mask.image = images.scamps_mask
-    radius_mask.image.colorspace_settings.name = 'Non-Color'
+    combine_radius = nodes.new(type="ShaderNodeCombineXYZ")
+    combine_radius.location = (-200, -200)
 
     animation_color_node = nodes.new('ShaderNodeGroup')
-    animation_color_node.location = (-600, -400)
-    animation_color_node.node_tree = make_shader_animation("Animation")
+    animation_color_node.location = (-400, 100)
+    animation_color_node.node_tree = make_shader_animation("Animation", 0)
+
+    define_radius = nodes.new(type="ShaderNodeCombineXYZ")
+    define_radius.location = (-400, -400)
 
     color_node = nodes.new(type="ShaderNodeRGB")
-    color_node.location = (-800, -400)
+    color_node.location = (-400, 300)
     color_node.outputs[0].default_value = images.getMeanSkinColor()
+
+    radius_mask = nodes.new(type="ShaderNodeTexImage")
+    radius_mask.location = (-800, -200)
+    radius_mask.image = images.scamps_mask
+    radius_mask.image.colorspace_settings.name = 'Non-Color'
 
     animation_value_node = nodes.new(type="ShaderNodeValue")
     animation_value_node.location = (-800, 100)
@@ -552,31 +595,38 @@ def makeShaderSCAMPS(images):
     # Add Connections
     links.new(animation_value_node.outputs[0], animation_color_node.inputs[0])
     links.new(magnitude_value_node.outputs[0], animation_color_node.inputs[3])
-
-    links.new(color_node.outputs["Color"], animation_color_node.inputs[2])
     animation_color_node.inputs[1].default_value = 0.5
+    animation_color_node.inputs[2].default_value = 0
+    links.new(radius_mask.outputs[0], animation_color_node.inputs[4])
 
-    links.new(animation_color_node.outputs["range_(+-0.1)"], subsurface_change_node.inputs[0])
-    links.new(animation_color_node.outputs["range_(+-0.1)"], subsurface_node.inputs[0])
+    define_radius.inputs[0].default_value = config.red_radius
+    define_radius.inputs[1].default_value = config.green_radius
+    define_radius.inputs[2].default_value = config.blue_radius
 
-    links.new(animation_color_node.outputs["range_(-1-1)"], mul_radius_node.inputs[1])
-    links.new(radius_mask.outputs["Color"], mul_radius_node.inputs[0])
+    links.new(define_radius.outputs[0], scale_color_node.inputs[0])
+    links.new(animation_color_node.outputs[1], scale_color_node.inputs[3])
 
-    links.new(mul_radius_node.outputs["Value"], mul_add_node.inputs[0])
-    mul_add_node.inputs[1].default_value = 0.5
-    mul_add_node.inputs[2].default_value = 0.5
+    links.new(animation_color_node.outputs[2], combine_radius.inputs[0])
+    links.new(animation_color_node.outputs[2], combine_radius.inputs[1])
+    links.new(animation_color_node.outputs[2], combine_radius.inputs[2])
 
-    links.new(mul_add_node.outputs[0], mix_radii_node.inputs[0])
-    links.new(subsurface_change_node.outputs[0], mix_radii_node.inputs[2])
-    links.new(subsurface_node.outputs[0], mix_radii_node.inputs[1])
+    links.new(scale_color_node.outputs[0], add_color_node.inputs[0])
+    links.new(color_node.outputs[0], add_color_node.inputs[1])
+
+    links.new(combine_radius.outputs[0], add_radius_node.inputs[0])
+    links.new(define_radius.outputs[0], add_radius_node.inputs[1])
+
+    links.new(add_color_node.outputs[0], subsurface_node.inputs[0])
+    links.new(add_radius_node.outputs[0], subsurface_node.inputs[2])
 
     links.new(tex_image_node.outputs["Color"], shader_node.inputs[0])
 
     mix_final_node.inputs[0].default_value = config.SUBSURFACE_FAC
     links.new(shader_node.outputs["BSDF"], mix_final_node.inputs[1])
-    links.new(mix_radii_node.outputs[0], mix_final_node.inputs[2])
+    links.new(subsurface_node.outputs[0], mix_final_node.inputs[2])
 
     links.new(mix_final_node.outputs[0], output_node.inputs["Surface"])
+
 
 # fit uv-map of FLAME head model to common head textures
 def adjustUVMap(uv_mesh):
@@ -606,6 +656,7 @@ def adjustUVMap(uv_mesh):
     bm.to_mesh(mesh)
     bm.free()
     mesh.update()
+
 
 # make keyframes for subsurface color and radii changes
 def animatePPGI(avs: np.ndarray, mags: np.ndarray, rs):
@@ -643,6 +694,7 @@ def animatePPGI(avs: np.ndarray, mags: np.ndarray, rs):
         mag_node.outputs[0].keyframe_insert(data_path="default_value", frame=i + 1)
 
     rs.adjustEndFrame(scene.frame_current)
+
 
 # set light situations
 def setupScenario(scenario, rs):
@@ -708,6 +760,7 @@ def setupScenario(scenario, rs):
     # bn.inputs["Color"].default_value = config.sunlight
     bn.inputs["Strength"].default_value = config.sunstrength
 
+
 # method that renders
 def render(rs):
     """
@@ -730,11 +783,11 @@ def render(rs):
             break
 
     # Render Settings
-    bpy.context.scene.render.engine = rs.engine #Render Engine
-    bpy.context.scene.cycles.device = rs.device #Render Device
-    bpy.context.scene.cycles.use_denoising = True #Use Denoising
-    bpy.context.scene.cycles.denoiser = rs.denoiser #Denoiser
-    bpy.context.scene.cycles.samples = rs.samples #Number of Samples
+    bpy.context.scene.render.engine = rs.engine  # Render Engine
+    bpy.context.scene.cycles.device = rs.device  # Render Device
+    bpy.context.scene.cycles.use_denoising = True  # Use Denoising
+    bpy.context.scene.cycles.denoiser = rs.denoiser  # Denoiser
+    bpy.context.scene.cycles.samples = rs.samples  # Number of Samples
     bpy.context.scene.render.use_persistent_data = False
     bpy.context.preferences.addons['cycles'].preferences.compute_device_type = rs.cdt
 
@@ -787,7 +840,8 @@ def render(rs):
 
     # bpy.ops.render.render(animation=True)
 
-#main method
+
+# main method
 def main(exp_room_path, uv_map_path, image_dict, rs):
     """
     :param exp_room_path: path to experiment room template
@@ -831,12 +885,12 @@ if __name__ == "__main__":
     exp_room_path = os.path.join(file, r"ExpRoom_template.blend")
     uv_map_path = os.path.join(file, r"assets\uv_coords_template.npy")
 
-    images = config.Images()
+    images = Images()
 
     scamps = False  # Use our own color changes and animation
     # scamps = True  # Use the rebuild of the SCAMPS paper
 
-    rs = RenderSettings('Logitech', "S01", "p001", "v01", scamps, 1, 300)
+    rs = RenderSettings('Logitech', "S01", "p001", "v01", scamps, 1, 150)
 
     tex_image = bpy.data.images.load(os.path.join(file, r"assets\tex_sample_01.png"), check_existing=True)
     tex_image.use_fake_user = True
@@ -844,7 +898,7 @@ if __name__ == "__main__":
 
     if scamps:
 
-        scamps_mask = bpy.data.images.load(os.path.join(file, r"assets\SCAMPS_mask.png"),
+        scamps_mask = bpy.data.images.load(os.path.join(file, r"assets\original_scamps_mask.png"),
                                            check_existing=True)
         scamps_mask.use_fake_user = True
         images.addSCAMPS(scamps_mask)

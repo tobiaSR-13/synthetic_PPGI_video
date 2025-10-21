@@ -25,6 +25,18 @@ def getRGB(rgb_image):
 
     return red, green, blue, alpha
 
+def getMax(rgb_image):
+    """
+    get maximum pixel value of a 3-channel (4-channel with alpha, respectively) image but only if the image is black-white
+    :param rgb_image: grayscale image
+    :return: maximum pixel value of image
+    """
+    pixels = rgb_image.pixels[:]
+    pixels = np.array(pixels)
+    channels = rgb_image.channels
+
+    return np.max(pixels[0::channels])
+
 
 def BW2OneChannel(bw_image):
     """
