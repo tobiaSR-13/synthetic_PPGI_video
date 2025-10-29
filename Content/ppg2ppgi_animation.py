@@ -84,6 +84,17 @@ def sign(p, n):
     """
     return 1 if p[0] < n[0] else -1
 
+def getClose2N(arr, n):
+    """
+
+    :param arr:
+    :param n:
+    :return:
+    """
+    for i, a in enumerate(arr):
+        if a-n > 0:
+            return i-1, i
+
 
 def getKeyframes(time, bvp, mode='smooth'):
     """
@@ -120,6 +131,44 @@ def getKeyframes(time, bvp, mode='smooth'):
             if np.min(bvp[n_low:n_high]) < bvp[neg_peaks[i]]: neg_del.append(i)
         neg_peaks = np.delete(neg_peaks, np.array(neg_del))
 
+        # delete if two pos or neg peaks are next to each other
+        labeled = [(x, 'pos') for x in peaks] + [(x, 'neg') for x in neg_peaks]
+        labeled.sort(key=lambda x: x[0])  # sort by index value
+
+        pos_del, neg_del = [], []
+        for i in range(1, len(labeled)):
+            if labeled[i][1] == labeled[i - 1][1]:
+                if labeled[i][1] == 'pos':
+                    m = np.argmin([bvp[labeled[i][0]], bvp[labeled[i - 1][0]]])
+                    pos_del.append(np.where(peaks == labeled[i-m][0])[0][0])
+
+                elif labeled[i][1] == 'neg':
+                    m = np.argmax([bvp[labeled[i][0]], bvp[labeled[i - 1][0]]])
+                    neg_del.append(np.where(neg_peaks == labeled[i-m][0])[0][0])
+
+        # correct if there is a neg peak above 0
+        for i, n in enumerate(neg_peaks):
+            if bvp[n] > 0:
+                i_low, i_up = getClose2N(peaks, n)
+                if bvp[peaks[i_low]] > bvp[peaks[i_up]]:
+                    pos_del.append(i_up)
+                else:
+                    pos_del.append(i_low)
+                neg_del.append(i)
+
+        # correct if there is a pos peak below 0
+        for i, p in enumerate(peaks):
+            if bvp[p] < 0:
+                i_low, i_up = getClose2N(neg_peaks, p)
+                if bvp[neg_peaks[i_low]] < bvp[neg_peaks[i_up]]:
+                    neg_del.append(i_up)
+                else:
+                    neg_del.append(i_low)
+                pos_del.append(i)
+
+        if pos_del: peaks = np.delete(peaks, np.array(pos_del))
+        if neg_del: neg_peaks = np.delete(neg_peaks, np.array(neg_del))
+
     elif mode == 'full':
         peaks, _ = sig.find_peaks(bvp)
         neg_peaks, _ = sig.find_peaks(-1 * bvp)
@@ -127,6 +176,19 @@ def getKeyframes(time, bvp, mode='smooth'):
     # get zero crossings
     signs = np.sign(bvp)
     zc = np.where(np.diff(signs) != 0)[0] + 1
+
+    # correct if there is a zc after last peak
+    if peaks[-1] < zc[-1] and neg_peaks[-1] > peaks[-1]:
+        if bvp[-1] > bvp[peaks[-1]]:
+            peaks = np.append(peaks, bvp.size -1)
+        else:
+            peaks = np.append(peaks, peaks[-1])
+    if neg_peaks[-1] < zc[-1] and peaks[-1] > neg_peaks[-1]:
+        if bvp[-1] < bvp[neg_peaks[-1]]:
+            neg_peaks = np.append(neg_peaks, bvp.size -1)
+        else:
+            neg_peaks = np.append(neg_peaks, neg_peaks[-1])
+
 
     # get peaks magnitude values
     pos_mag = bvp[peaks] / max(np.abs(bvp))
@@ -142,7 +204,7 @@ def getKeyframes(time, bvp, mode='smooth'):
         curr_mag = [bvp[peaks_copy[0]]]
     else:
         animation_state = [0]
-        curr_mag = [bvp[neg_peaks_copy[0]]]
+        curr_mag = [-bvp[neg_peaks_copy[0]]]
 
     b = 0 #initial value for multiplying the pi that will be added with every reached peak
     c = 1 #initial value for the sign that changes with every reached peak
@@ -151,9 +213,9 @@ def getKeyframes(time, bvp, mode='smooth'):
 
     for i in range (1, bvp.size):
         if i in zc:
-            if i < peaks[0] and i < neg_peaks[0]: pass #catch zero crossing before first peak
-            elif peaks_copy.size == 0 and neg_peaks_copy.size == 0: curr_mag.append(curr_mag[-1]) # catch zero crossing after last peak
-            elif animation_state[-1] == 0: curr_mag.append(bvp[neg_peaks_copy[0]])
+            if i < peaks[0] and i < neg_peaks[0]: curr_mag.append(curr_mag[-1]) #catch zero crossing before first peak
+            # elif peaks_copy.size == 0 and neg_peaks_copy.size == 0: curr_mag.append(curr_mag[-1]) # catch zero crossing after last peak
+            elif animation_state[-1] == 0: curr_mag.append(-bvp[neg_peaks_copy[0]])
             elif animation_state[-1] == 1: curr_mag.append(bvp[peaks_copy[0]])
 
         else:
@@ -162,6 +224,12 @@ def getKeyframes(time, bvp, mode='smooth'):
         # update ANIMATION VALUE
         b = addFunction(b, i, peaks_copy, neg_peaks_copy)
         c = signFunction(c, i, peaks_copy, neg_peaks_copy)
+
+        if bvp[i] > curr_mag[-1] and bvp[i] > 0:
+            raise RuntimeError(f"{bvp[i]}, {curr_mag[-1]}")
+        elif bvp[i] < - curr_mag[-1] and bvp[i] < 0:
+            raise RuntimeError(f"{bvp[i]}, {curr_mag[-1]}")
+
         av = np.arcsin(bvp[i] / abs(curr_mag[-1])) * c + b * np.pi * sign(peaks, neg_peaks)
         animation_value.append(av)
 
@@ -175,13 +243,11 @@ def getKeyframes(time, bvp, mode='smooth'):
             animation_state.append(animation_state[-1])
 
         if len(animation_value) != len(curr_mag):
-            print(f"Fehler bei {i}")
+            raise RuntimeError(f"{animation_value} != {curr_mag} at {i}")
 
     #verifyAnimation(bvp, time, peaks, neg_peaks, np.array(animation_value), np.array(curr_mag), zc)
 
-    print("Confirm Changes")
-
-    return animation_value, curr_mag, time
+    return animation_value, curr_mag/np.max(curr_mag), time
 
 def verifyAnimation(bvp, animation_value, curr_mag, time):
     """
@@ -193,7 +259,8 @@ def verifyAnimation(bvp, animation_value, curr_mag, time):
     :return: -
     """
 
-    sim_bvp = np.abs(curr_mag) * np.sin(animation_value)
+    sim_bvp = curr_mag * np.sin(animation_value)
+    bvp = bvp / np.max(np.abs(bvp))
 
     if sim_bvp.size != bvp.size:
         raise AttributeError("Array length mismatch")
@@ -213,7 +280,7 @@ def verifyAnimation(bvp, animation_value, curr_mag, time):
     print(f'BVp std: {np.std(bvp)}')
     print(f"NMAE: {np.sum(np.abs(bvp - sim_bvp)) / bvp.size / np.std(bvp)}")
 
-    residual = sim_bvp - bvp
+    return np.sum(np.abs(bvp - sim_bvp)) / bvp.size / np.std(bvp)
 
     #plt.plot(time, residual)
     #plt.plot(time[peaks], residual[peaks], 'ro')

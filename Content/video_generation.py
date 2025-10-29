@@ -617,9 +617,11 @@ def makeShaderSCAMPS(images):
     links.new(define_radius.outputs[0], add_radius_node.inputs[1])
 
     links.new(add_color_node.outputs[0], subsurface_node.inputs[0])
+    subsurface_node.inputs[1].default_value = 0.01
     links.new(add_radius_node.outputs[0], subsurface_node.inputs[2])
 
     links.new(tex_image_node.outputs["Color"], shader_node.inputs[0])
+    links.new(add_radius_node.outputs[0], shader_node.inputs[9])
 
     mix_final_node.inputs[0].default_value = config.SUBSURFACE_FAC
     links.new(shader_node.outputs["BSDF"], mix_final_node.inputs[1])
@@ -887,10 +889,10 @@ if __name__ == "__main__":
 
     images = Images()
 
-    scamps = False  # Use our own color changes and animation
-    # scamps = True  # Use the rebuild of the SCAMPS paper
+    # scamps = False  # Use our own color changes and animation
+    scamps = True  # Use the rebuild of the SCAMPS paper
 
-    rs = RenderSettings('Logitech', "S01", "p001", "v01", scamps, 1, 150)
+    rs = RenderSettings('Logitech', "S01", "p001", "v01", scamps, 1, 300)
 
     tex_image = bpy.data.images.load(os.path.join(file, r"assets\tex_sample_01.png"), check_existing=True)
     tex_image.use_fake_user = True
