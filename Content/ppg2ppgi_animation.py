@@ -110,85 +110,31 @@ def getKeyframes(time, bvp, mode='smooth'):
     if mode not in ['full', 'smooth']:
         raise AttributeError(f"Mode {mode} is not known. There is only mode 'full' or 'smooth' available")
 
-    # get positive and negative peaks
-    if mode == 'smooth':
-        peaks, _ = sig.find_peaks(bvp)
-        neg_peaks, _ = sig.find_peaks(-1*bvp)
-
-        # delete all positive peaks where there is a higher value within the last and next 5 indices
-        pos_del = []
-        for i in range(0, peaks.size):
-            n_low = max(peaks[i] - 5, 0)
-            n_high = min(peaks[i] + 5, bvp.size)
-            if np.max(bvp[n_low:n_high]) > bvp[peaks[i]]: pos_del.append(i)
-        peaks = np.delete(peaks, np.array(pos_del))
-
-        # delete all negative peaks where there is a lower value within the last and next 5 indices
-        neg_del = []
-        for i in range(0, neg_peaks.size):
-            n_low = max(neg_peaks[i]-5, 0)
-            n_high = min(neg_peaks[i]+5, bvp.size)
-            if np.min(bvp[n_low:n_high]) < bvp[neg_peaks[i]]: neg_del.append(i)
-        neg_peaks = np.delete(neg_peaks, np.array(neg_del))
-
-        # delete if two pos or neg peaks are next to each other
-        labeled = [(x, 'pos') for x in peaks] + [(x, 'neg') for x in neg_peaks]
-        labeled.sort(key=lambda x: x[0])  # sort by index value
-
-        pos_del, neg_del = [], []
-        for i in range(1, len(labeled)):
-            if labeled[i][1] == labeled[i - 1][1]:
-                if labeled[i][1] == 'pos':
-                    m = np.argmin([bvp[labeled[i][0]], bvp[labeled[i - 1][0]]])
-                    pos_del.append(np.where(peaks == labeled[i-m][0])[0][0])
-
-                elif labeled[i][1] == 'neg':
-                    m = np.argmax([bvp[labeled[i][0]], bvp[labeled[i - 1][0]]])
-                    neg_del.append(np.where(neg_peaks == labeled[i-m][0])[0][0])
-
-        # correct if there is a neg peak above 0
-        for i, n in enumerate(neg_peaks):
-            if bvp[n] > 0:
-                i_low, i_up = getClose2N(peaks, n)
-                if bvp[peaks[i_low]] > bvp[peaks[i_up]]:
-                    pos_del.append(i_up)
-                else:
-                    pos_del.append(i_low)
-                neg_del.append(i)
-
-        # correct if there is a pos peak below 0
-        for i, p in enumerate(peaks):
-            if bvp[p] < 0:
-                i_low, i_up = getClose2N(neg_peaks, p)
-                if bvp[neg_peaks[i_low]] < bvp[neg_peaks[i_up]]:
-                    neg_del.append(i_up)
-                else:
-                    neg_del.append(i_low)
-                pos_del.append(i)
-
-        if pos_del: peaks = np.delete(peaks, np.array(pos_del))
-        if neg_del: neg_peaks = np.delete(neg_peaks, np.array(neg_del))
-
-    elif mode == 'full':
-        peaks, _ = sig.find_peaks(bvp)
-        neg_peaks, _ = sig.find_peaks(-1 * bvp)
-
     # get zero crossings
     signs = np.sign(bvp)
     zc = np.where(np.diff(signs) != 0)[0] + 1
 
-    # correct if there is a zc after last peak
-    if peaks[-1] < zc[-1] and neg_peaks[-1] > peaks[-1]:
-        if bvp[-1] > bvp[peaks[-1]]:
-            peaks = np.append(peaks, bvp.size -1)
-        else:
-            peaks = np.append(peaks, peaks[-1])
-    if neg_peaks[-1] < zc[-1] and peaks[-1] > neg_peaks[-1]:
-        if bvp[-1] < bvp[neg_peaks[-1]]:
-            neg_peaks = np.append(neg_peaks, bvp.size -1)
-        else:
-            neg_peaks = np.append(neg_peaks, neg_peaks[-1])
+    peaks, neg_peaks = [], []
+    last_zc = 0
+    for z in zc:
+        if signs[z-1] == 1:
+            peak = np.argmax(bvp[last_zc:z]) + last_zc
+            peaks.append(peak)
+            last_zc = z
+        elif signs[z-1] == -1:
+            peak = np.argmin(bvp[last_zc:z]) + last_zc
+            neg_peaks.append(peak)
+            last_zc = z
+        if z == zc[-1]:
+            if signs[z] == 1:
+                peak = np.argmax(bvp[z:]) + last_zc
+                if bvp[peak] > bvp[peaks[-1]]: peaks.append(peak)
+                else: peaks.append(peaks[-1])
 
+            elif signs[z] == -1:
+                peak = np.argmin(bvp[z:]) + last_zc
+                if bvp[peak] < bvp[peaks[-1]]: neg_peaks.append(peak)
+                else: neg_peaks.append(peaks[-1])
 
     # get peaks magnitude values
     pos_mag = bvp[peaks] / max(np.abs(bvp))
@@ -206,6 +152,12 @@ def getKeyframes(time, bvp, mode='smooth'):
         animation_state = [0]
         curr_mag = [-bvp[neg_peaks_copy[0]]]
 
+    # remove peak if it has index 0
+    if 0 in peaks_copy:
+        peaks_copy.remove(0)
+    if 0 in neg_peaks_copy:
+        neg_peaks_copy.remove(0)
+
     b = 0 #initial value for multiplying the pi that will be added with every reached peak
     c = 1 #initial value for the sign that changes with every reached peak
 
@@ -213,10 +165,10 @@ def getKeyframes(time, bvp, mode='smooth'):
 
     for i in range (1, bvp.size):
         if i in zc:
-            if i < peaks[0] and i < neg_peaks[0]: curr_mag.append(curr_mag[-1]) #catch zero crossing before first peak
-            # elif peaks_copy.size == 0 and neg_peaks_copy.size == 0: curr_mag.append(curr_mag[-1]) # catch zero crossing after last peak
-            elif animation_state[-1] == 0: curr_mag.append(-bvp[neg_peaks_copy[0]])
-            elif animation_state[-1] == 1: curr_mag.append(bvp[peaks_copy[0]])
+            if signs[i] == 1:
+                curr_mag.append(bvp[peaks_copy[0]])
+            elif signs[i] == -1:
+                curr_mag.append(-bvp[neg_peaks_copy[0]])
 
         else:
             curr_mag.append(curr_mag[-1])
@@ -226,9 +178,9 @@ def getKeyframes(time, bvp, mode='smooth'):
         c = signFunction(c, i, peaks_copy, neg_peaks_copy)
 
         if bvp[i] > curr_mag[-1] and bvp[i] > 0:
-            raise RuntimeError(f"{bvp[i]}, {curr_mag[-1]}")
+            raise RuntimeError(f"{bvp[i]}, {curr_mag[-1]} at {i}")
         elif bvp[i] < - curr_mag[-1] and bvp[i] < 0:
-            raise RuntimeError(f"{bvp[i]}, {curr_mag[-1]}")
+            raise RuntimeError(f"{bvp[i]}, {curr_mag[-1]} at {i}")
 
         av = np.arcsin(bvp[i] / abs(curr_mag[-1])) * c + b * np.pi * sign(peaks, neg_peaks)
         animation_value.append(av)
